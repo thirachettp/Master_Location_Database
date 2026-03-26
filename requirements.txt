@@ -5,3 +5,4 @@ numpy
 openpyxl
 pyzbar
 streamlit_webrtc
+opencv-python
