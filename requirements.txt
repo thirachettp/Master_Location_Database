@@ -3,6 +3,7 @@ matplotlib
 pandas
 numpy
 openpyxl
-zbar
-streamlit_webrtc
+streamlit-webrtc
 opencv-python-headless
+pyzbar
+Pillow
