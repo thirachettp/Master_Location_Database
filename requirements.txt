@@ -6,3 +6,4 @@ openpyxl
 pyzbar
 streamlit_webrtc
 opencv-python
+cv2
