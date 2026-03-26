@@ -1,3 +1,3 @@
 git add requirements.txt
-git commit -m "Fix requirements.txt: remove git command"
+git add requirements.txt packages.txt git commit -m "Add pyzbar, Pillow and system packages for Streamlit"
 git push
