@@ -1,133 +1,87 @@
 import streamlit as st
-import time
-import cv2
-from pyzbar.pyzbar import decode
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-import av
+import pandas as pd
 
-# ------------------ CONFIG ------------------
-st.set_page_config(page_title="MHE Pallet Tracking", layout="centered")
+st.set_page_config(page_title="Lookup Tool", layout="wide")
 
-# ------------------ SESSION ------------------
-if "page" not in st.session_state:
-    st.session_state.page = "login"
+uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
-if "user" not in st.session_state:
-    st.session_state.user = None
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
 
-if "last_scan" not in st.session_state:
-    st.session_state.last_scan = None
+    st.subheader("📄 Excel Preview")
+    st.dataframe(df.head(), use_container_width=True)
 
-# ------------------ MOCK DATABASE ------------------
-USERS = {
-    "admin": {"password": "123", "role": "Admin"},
-    "user1": {"password": "123", "role": "User"}
-}
+    excel_col = st.selectbox("เลือก column จาก Excel", df.columns)
 
-# ------------------ FUNCTIONS ------------------
-def go(page):
-    st.session_state.page = page
+    csv_df = pd.read_csv("Main_MasterSequence.csv")
 
-def authenticate(username, password):
-    user = USERS.get(username)
-    if not user:
-        return False, "User not found"
-    if user["password"] != password:
-        return False, "Wrong password"
-    return True, user
+    csv_col = "Location"
+    value_col = "Sequence"
 
-def require_login():
-    if not st.session_state.get("user"):
-        st.warning("Please login first")
-        go("login")
-        st.stop()
+    use_last7 = st.checkbox("Match แค่ 7 ตัวท้าย (CMG offline เช่น SABC01A1 → ABC01A1)")
 
-# ------------------ CAMERA PROCESSOR ------------------
-class VideoProcessor(VideoProcessorBase):
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
+    if st.button("🚀 Run Lookup"):
 
-        decoded_objects = decode(img)
-
-        for obj in decoded_objects:
-            x, y, w, h = obj.rect
-            barcode_data = obj.data.decode("utf-8")
-
-            # วาดกรอบ
-            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-            # ใส่ข้อความ
-            cv2.putText(img, barcode_data, (x, y-10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 0), 2)
-
-            # save ล่าสุด
-            st.session_state.last_scan = barcode_data
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-# ------------------ PAGES ------------------
-def login_page():
-    st.title("🔐 MHE Pallet Tracking")
-    st.caption("Track pallets in trip assignment")
-
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
-
-        if submitted:
-            success, result = authenticate(username, password)
-
-            if not success:
-                st.error(result)
-            else:
-                st.session_state.user = {
-                    "username": username,
-                    "role": result["role"]
-                }
-                with st.spinner("Logging in..."):
-                    time.sleep(1)
-                go("scan")
-
-def scan_page():
-    require_login()
-
-    user = st.session_state.user
-
-    st.title("📦 Scanning Page")
-    st.success(f"Logged in as: {user['username']} ({user['role']})")
-
-    st.subheader("📷 Camera Scanner (OpenCV)")
-
-    webrtc_streamer(
-        key="scanner",
-        video_processor_factory=VideoProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-    )
-
-    # แสดงผลล่าสุด
-    if st.session_state.last_scan:
-        st.success(f"✅ Last Scan: {st.session_state.last_scan}")
-
-    st.divider()
-
-    # Manual input (backup)
-    pallet_id = st.text_input("⌨️ Or Enter Pallet ID")
-    if st.button("Submit Manual"):
-        if pallet_id:
-            st.success(f"Pallet '{pallet_id}' saved!")
+        # ===== KEY LOGIC =====
+        if use_last7:
+            df["_key"] = df[excel_col].astype(str).str[-7:]
+            csv_df["_key"] = csv_df[csv_col].astype(str).str[-7:]
         else:
-            st.warning("Please enter pallet ID")
+            df["_key"] = df[excel_col].astype(str)
+            csv_df["_key"] = csv_df[csv_col].astype(str)
 
-    st.divider()
+        # ===== MERGE =====
+        result = df.merge(
+            csv_df[["_key", value_col]],
+            on="_key",
+            how="left"
+        )
 
-    if st.button("Logout"):
-        st.session_state.clear()
-        go("login")
+        result = result.drop(columns=["_key"])
 
-# ------------------ ROUTER ------------------
-if st.session_state.page == "login":
-    login_page()
-elif st.session_state.page == "scan":
-    scan_page()
+        # ===== SUMMARY =====
+        matched_count = result[value_col].notna().sum()
+        total_count = len(result)
+        unmatched_count = total_count - matched_count
+        match_rate = matched_count / total_count * 100 if total_count else 0
+
+        # ===== KPI UI =====
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("✅ Matched", f"{matched_count:,}")
+        col2.metric("❌ Unmatched", f"{unmatched_count:,}")
+        col3.metric("📊 Match Rate", f"{match_rate:.2f}%")
+
+        st.divider()
+
+        # ===== RESULT TABLE =====
+        st.subheader("📊 Result")
+        st.dataframe(result, use_container_width=True)
+
+        # Download
+        import io
+
+        output = io.BytesIO()
+
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            result.to_excel(writer, index=False, sheet_name='Result')
+
+        output.seek(0)
+
+        st.download_button(
+            label="📥 Download Result (Excel)",
+            data=output,
+            file_name="lookup_result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        # ===== SHOW DATA =====
+        matched_df = result[result[value_col].notna()]
+        unmatched_df = result[result[value_col].isna()]
+
+        st.subheader("📊 Matched Data")
+        with st.expander(f"Show Matched ({len(matched_df):,})"):
+            st.dataframe(matched_df, use_container_width=True)
+
+        st.subheader("⚠️ Unmatched Data")
+        with st.expander(f"Show Unmatched ({len(unmatched_df):,})"):
+            st.dataframe(unmatched_df, use_container_width=True)
